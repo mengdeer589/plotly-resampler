@@ -10,6 +10,7 @@ from __future__ import annotations
 
 __author__ = "Jonas Van Der Donckt, Jeroen Van Der Donckt, Emiel Deprost"
 
+import asyncio
 import os
 import warnings
 from pathlib import Path
@@ -468,6 +469,7 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
         config: dict | None = None,
         init_dash_kwargs: dict | None = None,
         graph_properties: dict | None = None,
+        backend: str = "flask",
         **kwargs,
     ):
         """Registers the `update_graph` callback & show the figure in a dash app.
@@ -520,6 +522,12 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
             Note: "config" is not allowed as key in this dict, as there is a distinct
             ``config`` parameter for this property in this method.
             See more [https://dash.plotly.com/dash-core-components/graph](https://dash.plotly.com/dash-core-components/graph)
+        backend: str, optional
+            The web framework backend to use. One of ``"flask"`` or ``"fastapi"``.
+            When ``"fastapi"``, the Dash app uses FastAPI as its underlying web server,
+            and the resample callback runs asynchronously via a thread-pool.
+            Requires Dash >= 4.1.0 and the ``fastapi`` / ``uvicorn`` packages.
+            By default ``"flask"``.
         **kwargs: dict
             kwargs for the ``app.run_server()`` method, e.g., port=8037.
             !!! note
@@ -597,12 +605,14 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
             ]
 
         # Create the app, populate the layout and register the resample callback
+        init_dash_kwargs.setdefault("backend", backend)
         app = dash.Dash("local_app", **init_dash_kwargs)
         app.layout = div
         self.register_update_graph_callback(
             app,
             "resample-figure",
             "overview-figure" if self._create_overview else None,
+            backend=backend,
         )
 
         # 2. Run the app
@@ -700,11 +710,26 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
                 patched_figure["data"][trace_index][k] = v
         return patched_figure
 
+    async def _async_construct_update_data_patch(
+        self, relayout_data: dict
+    ) -> Union[dash.Patch, dash.no_update]:
+        """Async wrapper around [`construct_update_data_patch`][figure_resampler.figure_resampler.FigureResampler.construct_update_data_patch].
+
+        Runs the CPU-bound aggregation in a thread-pool so it does not block
+        the async event-loop (beneficial when using FastAPI backend).
+
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self.construct_update_data_patch, relayout_data
+        )
+
     def register_update_graph_callback(
         self,
         app: dash.Dash,
         graph_id: str,
         coarse_graph_id: Optional[str] = None,
+        backend: str = "flask",
     ):
         """Register the [`construct_update_data_patch`][figure_resampler.figure_resampler_interface.AbstractFigureAggregator.construct_update_data_patch]
         method as callback function to the passed dash-app.
@@ -719,6 +744,10 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
         coarse_graph_id: str, optional
             The id of the ``dcc.Graph``-component which withholds the coarse overview
             Figure, by default None.
+        backend: str, optional
+            The web framework backend to use. One of ``"flask"`` or ``"fastapi"``.
+            When ``"fastapi"``, an async callback is registered that runs the
+            CPU-bound aggregation in a thread-pool. By default ``"flask"``.
 
         """
         # As we use the figure again as output, we need to set: allow_duplicate=True
@@ -748,11 +777,18 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
                 prevent_initial_call=True,
             )
 
-        app.callback(
-            dash.Output(graph_id, "figure", allow_duplicate=True),
-            dash.Input(graph_id, "relayoutData"),
-            prevent_initial_call=True,
-        )(self.construct_update_data_patch)
+        if backend == "fastapi":
+            app.callback(
+                dash.Output(graph_id, "figure", allow_duplicate=True),
+                dash.Input(graph_id, "relayoutData"),
+                prevent_initial_call=True,
+            )(self._async_construct_update_data_patch)
+        else:
+            app.callback(
+                dash.Output(graph_id, "figure", allow_duplicate=True),
+                dash.Input(graph_id, "relayoutData"),
+                prevent_initial_call=True,
+            )(self.construct_update_data_patch)
 
     def _get_pr_props_keys(self) -> List[str]:
         # Add the additional plotly-resampler properties of this class

@@ -18,10 +18,21 @@ from uuid import uuid4
 
 import dash
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
-from pandas.io.json._normalize import nested_to_record
 from plotly.basedatatypes import BaseFigure, BaseTraceType
+
+from ..compat import (
+    RangeIndex,
+    DatetimeIndex,
+    Timedelta,
+    to_datetime,
+    to_numeric,
+    Categorical,
+    is_datetime64_any_dtype,
+    nested_to_record,
+    _check_pandas,
+    get_pandas,
+)
 
 from ..aggregation import AbstractAggregator, MedDiffGapHandler, MinMaxLTTB
 from ..aggregation.aggregation_interface import DataPointSelector
@@ -280,8 +291,8 @@ class AbstractFigureAggregator(BaseFigure, ABC):
                 return name
 
             mean_bin_size = (agg_x[-1] - agg_x[0]) / agg_x.shape[0]  # mean bin size
-            if isinstance(mean_bin_size, (np.timedelta64, pd.Timedelta)):
-                mean_bin_size = round_td_str(pd.Timedelta(mean_bin_size))
+            if isinstance(mean_bin_size, (np.timedelta64, Timedelta)):
+                mean_bin_size = round_td_str(Timedelta(mean_bin_size))
             else:
                 mean_bin_size = round_number_str(mean_bin_size)
             name += f"{agg_prefix}{mean_bin_size}{agg_suffix}"
@@ -342,15 +353,15 @@ class AbstractFigureAggregator(BaseFigure, ABC):
 
         # Parse trace data (necessary when updating the trace data)
         for k in _hf_data_container._fields:
-            if isinstance(
-                hf_trace_data[k], (np.ndarray, pd.RangeIndex, pd.DatetimeIndex)
-            ):
+            if isinstance(hf_trace_data[k], (np.ndarray, RangeIndex, DatetimeIndex)):
                 # is faster to escape the loop here than check inside the hasattr if
                 continue
-            elif pd.DatetimeTZDtype.is_dtype(hf_trace_data[k]):
-                # When we use the .values method, timezone information is lost
-                # so convert it to pd.DatetimeIndex, which preserves the tz-info
-                hf_trace_data[k] = pd.Index(hf_trace_data[k])
+            elif _check_pandas():
+                pd = get_pandas()
+                if pd.DatetimeTZDtype.is_dtype(hf_trace_data[k]):
+                    # When we use the .values method, timezone information is lost
+                    # so convert it to pd.DatetimeIndex, which preserves the tz-info
+                    hf_trace_data[k] = pd.Index(hf_trace_data[k])
             elif hasattr(hf_trace_data[k], "values"):
                 # when not a range index or datetime index
                 hf_trace_data[k] = hf_trace_data[k].values
@@ -404,10 +415,12 @@ class AbstractFigureAggregator(BaseFigure, ABC):
         # Check if downsamplable properties also need to be downsampled
         for prop_name, _, _ in DOWNSAMPLABLE_PROPERTIES:
             k_val = hf_trace_data.get(prop_name)
-            if isinstance(k_val, (np.ndarray, pd.Series)):
-                assert isinstance(
-                    hf_trace_data["downsampler"], DataPointSelector
-                ), "Only DataPointSelector can downsample non-data trace array props."
+            if isinstance(k_val, np.ndarray) or (
+                _check_pandas() and isinstance(k_val, get_pandas().Series)
+            ):
+                assert isinstance(hf_trace_data["downsampler"], DataPointSelector), (
+                    "Only DataPointSelector can downsample non-data trace array props."
+                )
                 # Use the same indices that were used for x and y aggregation
                 # indices are relative to the slice, so we need to add start_idx
                 _nest_dict_rec(prop_name, k_val[start_idx + indices], trace)
@@ -591,28 +604,34 @@ class AbstractFigureAggregator(BaseFigure, ABC):
             A namedtuple which serves as a datacontainer.
 
         """
-        hf_x: np.ndarray | pd.Index = (
+        hf_x: np.ndarray | DatetimeIndex | RangeIndex = (
             # fmt: off
             (np.asarray(trace["x"]) if trace["x"] is not None else None)
             if hasattr(trace, "x") and hf_x is None
-            # If we cast a tz-aware datetime64 array to `.values` we lose the tz-info 
-            # and the UTC time will be displayed instead of the tz-localized time, 
-            # hence we cast to a pd.DatetimeIndex, which preserves the tz-info
-            # As a matter of fact, to resolve #231, we also convert non-tz-aware 
-            # datetime64 arrays to an pd.Index
-            else pd.Index(hf_x) if pd.core.dtypes.common.is_datetime64_any_dtype(hf_x)
-            else hf_x.values if isinstance(hf_x, pd.Series)
-            else hf_x if isinstance(hf_x, pd.Index)
+            # If we cast a tz-aware datetime64 array to `.values` we lose the tz-info
+            # and the UTC time will be displayed instead of the tz-localized time,
+            # hence we cast to a DatetimeIndex, which preserves the tz-info
+            # As a matter of fact, to resolve #231, we also convert non-tz-aware
+            # datetime64 arrays to an DatetimeIndex
+            else DatetimeIndex(hf_x)
+            if is_datetime64_any_dtype(hf_x)
+            else hf_x.values
+            if _check_pandas() and isinstance(hf_x, get_pandas().Series)
+            else hf_x
+            if isinstance(hf_x, (RangeIndex, DatetimeIndex))
             else np.asarray(hf_x)
             # fmt: on
         )
-        if pd.core.dtypes.common.is_datetime64_any_dtype(hf_x):
-            hf_x = pd.Index(hf_x)
+        if is_datetime64_any_dtype(hf_x):
+            hf_x = DatetimeIndex(hf_x)
 
         hf_y = (
             trace["y"]
             if hasattr(trace, "y") and hf_y is None
-            else hf_y.values if isinstance(hf_y, (pd.Series, pd.Index)) else hf_y
+            else hf_y.values
+            if _check_pandas()
+            and isinstance(hf_y, (get_pandas().Series, get_pandas().Index))
+            else hf_y
         )
         # NOTE: the if will not be triggered for a categorical series its values
         if not hasattr(hf_y, "dtype"):
@@ -635,7 +654,7 @@ class AbstractFigureAggregator(BaseFigure, ABC):
         if trace["type"].lower() in self._high_frequency_traces:
             if hf_x is None:  # if no data as x or hf_x is passed
                 if hf_y.ndim != 0:  # if hf_y is an array
-                    hf_x = pd.RangeIndex(0, len(hf_y))  # np.arange(len(hf_y))
+                    hf_x = RangeIndex(0, len(hf_y))  # np.arange(len(hf_y))
                 else:  # if no data as y or hf_y is passed
                     hf_x = np.asarray([])
                     hf_y = np.asarray([])
@@ -654,18 +673,20 @@ class AbstractFigureAggregator(BaseFigure, ABC):
             # Note: this converts the hf properties to np.ndarray
             for prop_name, _, _ in DOWNSAMPLABLE_PROPERTIES:
                 prop_value = parsed_properties.get(prop_name)
-                if isinstance(prop_value, (tuple, list, np.ndarray, pd.Series)):
+                if isinstance(prop_value, (tuple, list, np.ndarray)) or (
+                    _check_pandas() and isinstance(prop_value, get_pandas().Series)
+                ):
                     parsed_properties[prop_name] = np.asarray(prop_value)
 
             # Try to parse the hf_x data if it is of object type or
             if len(hf_x) and (hf_x.dtype.type is np.str_ or hf_x.dtype == "object"):
                 try:
                     # Try to parse to numeric
-                    hf_x = pd.to_numeric(hf_x, errors="raise")
+                    hf_x = to_numeric(hf_x, errors="raise")
                 except (ValueError, TypeError):
                     try:
                         # Try to parse to datetime
-                        hf_x = pd.to_datetime(hf_x, utc=False, errors="raise")
+                        hf_x = to_datetime(hf_x, utc=False, errors="raise")
                         # Will be cast to object array if it contains multiple timezones.
                         if hf_x.dtype == "object":
                             raise ValueError(
@@ -688,9 +709,9 @@ class AbstractFigureAggregator(BaseFigure, ABC):
                 # Note that a bool array of type object will remain a bool array (and
                 # not will be transformed to an array of ints (0, 1))
                 try:
-                    hf_y = pd.to_numeric(hf_y, errors="raise")
+                    hf_y = to_numeric(hf_y, errors="raise")
                 except ValueError:
-                    hf_y = pd.Categorical(hf_y)  # TODO: ordered=True?
+                    hf_y = Categorical(hf_y)  # TODO: ordered=True?
             assert len(hf_x) == len(hf_y), "x and y have different length!"
         else:
             self._print(f"trace {trace['type']} is not a high-frequency trace")
@@ -809,10 +830,17 @@ class AbstractFigureAggregator(BaseFigure, ABC):
             "sorted in time; i.e., the x-data must be (non-strictly) "
             "monotonically increasing."
         )
-        if isinstance(dc.x, pd.Index):
+        if isinstance(dc.x, (RangeIndex, DatetimeIndex)):
             assert dc.x.is_monotonic_increasing, assert_text
+        elif _check_pandas():
+            pd = get_pandas()
+            if isinstance(dc.x, pd.Index):
+                assert dc.x.is_monotonic_increasing, assert_text
+            else:
+                assert pd.Series(dc.x).is_monotonic_increasing, assert_text
         else:
-            assert pd.Series(dc.x).is_monotonic_increasing, assert_text
+            # 无 pandas 时，用 numpy 检查单调性
+            assert np.all(np.diff(dc.x) >= 0) if len(dc.x) > 1 else True, assert_text
 
         # As we support prefix-suffixing of downsampled data, we assure that
         # each trace has a name
@@ -826,8 +854,7 @@ class AbstractFigureAggregator(BaseFigure, ABC):
         # identified by its UUID
         axis_type = (
             "date"
-            if isinstance(dc.x, pd.DatetimeIndex)
-            or pd.core.dtypes.common.is_datetime64_any_dtype(dc.x)
+            if isinstance(dc.x, DatetimeIndex) or is_datetime64_any_dtype(dc.x)
             else "linear"
         )
 
@@ -964,10 +991,11 @@ class AbstractFigureAggregator(BaseFigure, ABC):
 
             See the example below:
                 ```python
+                >>> import numpy as np
                 >>> from plotly.subplots import make_subplots
-                >>> s = pd.Series()  # a high-frequency series, with more than 1e7 samples
+                >>> s = np.random.randn(10_000_000)  # a high-frequency series
                 >>> fig = FigureResampler(go.Figure())
-                >>> fig.add_trace(go.Scattergl(x=[], y=[], ...), hf_x=s.index, hf_y=s)
+                >>> fig.add_trace(go.Scattergl(x=[], y=[], ...), hf_x=np.arange(len(s)), hf_y=s)
                 ```
 
             !!! todo

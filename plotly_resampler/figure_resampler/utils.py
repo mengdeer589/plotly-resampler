@@ -2,7 +2,7 @@
 
 import math
 
-import pandas as pd
+from ..compat import Timedelta
 from plotly.basedatatypes import BaseFigure
 
 try:  # Fails when IPywidgets is not installed
@@ -106,12 +106,12 @@ def is_fwr(figure: Any) -> bool:
 ### Rounding functions for bin size
 
 
-def timedelta_to_str(td: pd.Timedelta) -> str:
+def timedelta_to_str(td: Timedelta) -> str:
     """Construct a tight string representation for the given timedelta arg.
 
     Parameters
     ----------
-    td: pd.Timedelta
+    td: Timedelta
         The timedelta for which the string representation is constructed
 
     Returns
@@ -124,7 +124,7 @@ def timedelta_to_str(td: pd.Timedelta) -> str:
     out_str = ""
 
     # Edge case if we deal with negative
-    if td < pd.Timedelta(seconds=0):
+    if td < Timedelta(seconds=0):
         td *= -1
         out_str += "NEG"
 
@@ -155,12 +155,12 @@ def timedelta_to_str(td: pd.Timedelta) -> str:
     return out_str
 
 
-def round_td_str(td: pd.Timedelta) -> str:
+def round_td_str(td: Timedelta) -> str:
     """Round a timedelta to the nearest unit and convert to a string.
 
     Parameters
     ----------
-    td : pd.Timedelta
+    td : Timedelta
         The timedelta to round.
 
     Returns
@@ -174,8 +174,9 @@ def round_td_str(td: pd.Timedelta) -> str:
 
     """
     for t_s in ("D", "h", "min", "s", "ms", "us", "ns"):
-        if td > 0.95 * pd.Timedelta(f"1{t_s}"):
+        if td > 0.95 * Timedelta(f"1{t_s}"):
             return timedelta_to_str(td.round(t_s))
+    return None
 
 
 def round_number_str(number: float) -> str:

@@ -1,4 +1,3 @@
-import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
@@ -12,6 +11,11 @@ from plotly_resampler.figure_resampler.utils import (
     round_td_str,
     timedelta_to_str,
 )
+from plotly_resampler.compat import Timedelta, _check_pandas
+
+# 如果 pandas 可用，导入 pd.Timedelta 用于测试
+if _check_pandas():
+    import pandas as pd
 
 
 @pytest.mark.parametrize(
@@ -85,13 +89,20 @@ def test_is_fwr():
 
 
 def test_timedelta_to_str():
-    assert (round_td_str(pd.Timedelta("1W"))) == "7D"
-    assert (timedelta_to_str(pd.Timedelta("1W"))) == "7D"
-    assert (timedelta_to_str(pd.Timedelta("1W") * -1)) == "NEG7D"
-    assert timedelta_to_str(pd.Timedelta("1s 114ms")) == "1.114s"
-    assert round_td_str(pd.Timedelta("14.4ms")) == "14ms"
-    assert round_td_str(pd.Timedelta("501ms")) == "501ms"
-    assert round_td_str(pd.Timedelta("951ms")) == "1s"
+    # 使用我们自己的 Timedelta 类进行测试
+    assert (round_td_str(Timedelta("1W"))) == "7D"
+    assert (timedelta_to_str(Timedelta("1W"))) == "7D"
+    assert (timedelta_to_str(Timedelta("1W") * -1)) == "NEG7D"
+    assert timedelta_to_str(Timedelta("1s 114ms")) == "1.114s"
+    assert round_td_str(Timedelta("14.4ms")) == "14ms"
+    assert round_td_str(Timedelta("501ms")) == "501ms"
+    assert round_td_str(Timedelta("951ms")) == "1s"
+
+    # 如果 pandas 可用，也测试 pd.Timedelta 的兼容性
+    if _check_pandas():
+        assert (round_td_str(pd.Timedelta("1W"))) == "7D"
+        assert (timedelta_to_str(pd.Timedelta("1W"))) == "7D"
+        assert (timedelta_to_str(pd.Timedelta("1W") * -1)) == "NEG7D"
     assert round_td_str(pd.Timedelta("950ms")) == "950ms"
     assert round_td_str(pd.Timedelta("949ms")) == "949ms"
     assert round_td_str(pd.Timedelta("500ms")) == "500ms"

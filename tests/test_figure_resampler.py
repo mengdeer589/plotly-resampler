@@ -11,7 +11,6 @@ from datetime import timedelta
 from typing import List
 
 import numpy as np
-import pandas as pd
 import plotly
 import plotly.graph_objects as go
 import pytest
@@ -21,6 +20,13 @@ from selenium.webdriver.common.by import By
 
 from plotly_resampler import LTTB, EveryNthPoint, FigureResampler
 from plotly_resampler.aggregation import NoGapHandler, PlotlyAggregatorParser
+from plotly_resampler.compat import _check_pandas
+
+# 可选导入 pandas
+if _check_pandas():
+    import pandas as pd
+else:
+    pd = None
 
 # Note: this will be used to skip / alter behavior when running browser tests on
 # non-linux platforms.
@@ -561,7 +567,7 @@ def test_hf_text_and_hf_marker_color():
 
     x = pd.date_range("1-1-2000", "1-1-2001", periods=2_000)
     y = np.sin(100 * np.arange(len(x)) / len(x))
-    text = [f'text: {yi}, color:{"black" if yi>=0.99 else "blue"}' for yi in y]
+    text = [f"text: {yi}, color:{'black' if yi >= 0.99 else 'blue'}" for yi in y]
     marker_color = ["black" if yi >= 0.99 else "blue" for yi in y]
     trace = go.Scatter(
         x=x,

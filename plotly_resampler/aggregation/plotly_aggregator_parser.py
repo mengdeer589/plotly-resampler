@@ -4,9 +4,19 @@ import bisect
 from typing import Tuple, Union
 
 import numpy as np
-import pandas as pd
 import pytz
 
+from ..compat import (
+    RangeIndex,
+    DatetimeIndex,
+    Timestamp,
+    Categorical,
+    to_datetime,
+    _check_pandas,
+    _check_polars,
+    get_pandas,
+    get_polars,
+)
 from .aggregation_interface import DataAggregator, DataPointSelector
 from .gap_handler_interface import AbstractGapHandler
 from .gap_handlers import NoGapHandler
@@ -15,24 +25,65 @@ from .gap_handlers import NoGapHandler
 class PlotlyAggregatorParser:
     @staticmethod
     def parse_hf_data(
-        hf_data: np.ndarray | pd.Categorical | pd.Series | pd.Index,
-    ) -> np.ndarray | pd.Categorical:
+        hf_data: np.ndarray | Categorical | RangeIndex | DatetimeIndex,
+    ) -> np.ndarray | Categorical:
         """Parse the high-frequency data to a numpy array."""
-        # Categorical data (pandas)
-        #   - pd.Series with categorical dtype -> calling .values will returns a
-        #       pd.Categorical
-        #   - pd.CategoricalIndex -> calling .values returns a pd.Categorical
-        #   - pd.Categorical: has no .values attribute -> will not be parsed
-        if isinstance(hf_data, pd.RangeIndex):
+        # Categorical data (pandas/polars)
+        if isinstance(hf_data, RangeIndex):
             return None
-        if isinstance(hf_data, (pd.Series, pd.Index)):
+        if isinstance(hf_data, (DatetimeIndex, RangeIndex)):
             return hf_data.values
+
+        # 处理 polars 数据
+        if _check_polars():
+            try:
+                pl = get_polars()
+                if isinstance(hf_data, pl.Series):
+                    # 处理 polars Categorical/Enum 类型
+                    if hf_data.dtype in (pl.Categorical, pl.Enum):
+                        # 获取唯一的类别值
+                        unique_vals = hf_data.unique().to_list()
+                        codes = hf_data.to_physical().to_numpy()
+                        return Categorical(
+                            codes,
+                            categories=unique_vals,
+                            ordered=(hf_data.dtype == pl.Enum),
+                            as_codes=True,
+                        )
+                    return hf_data.to_numpy()
+                if isinstance(hf_data, pl.DataFrame):
+                    return hf_data.to_numpy()
+            except Exception:
+                pass
+
+        # 处理 pandas 数据
+        if _check_pandas():
+            pd = get_pandas()
+            if isinstance(hf_data, (pd.Series, pd.Index)):
+                values = hf_data.values
+                # 如果是 pd.Categorical，转换为我们的 Categorical 类
+                if isinstance(values, pd.Categorical):
+                    return Categorical(
+                        values.codes,
+                        categories=values.categories.tolist(),
+                        ordered=values.ordered,
+                        as_codes=True,
+                    )
+                return values
+            # 直接处理 pd.Categorical
+            if isinstance(hf_data, pd.Categorical):
+                return Categorical(
+                    hf_data.codes,
+                    categories=hf_data.categories.tolist(),
+                    ordered=hf_data.ordered,
+                    as_codes=True,
+                )
         return hf_data
 
     @staticmethod
     def to_same_tz(
-        ts: Union[pd.Timestamp, None], reference_tz: Union[pytz.BaseTzInfo, None]
-    ) -> Union[pd.Timestamp, None]:
+        ts: Union[Timestamp, None], reference_tz: Union[pytz.BaseTzInfo, None]
+    ) -> Union[Timestamp, None]:
         """Adjust `ts` its timezone to the `reference_tz`."""
         if ts is None:
             return None
@@ -69,7 +120,7 @@ class PlotlyAggregatorParser:
             start, end = 10**start, 10**end
 
         # We can compute the start & end indices directly when it is a RangeIndex
-        if isinstance(hf_trace_data["x"], pd.RangeIndex):
+        if isinstance(hf_trace_data["x"], RangeIndex):
             x_start = hf_trace_data["x"].start
             x_step = hf_trace_data["x"].step
             start_idx = int(max((start - x_start) // x_step, 0))
@@ -78,9 +129,9 @@ class PlotlyAggregatorParser:
         # TODO: this can be performed as-well for a fixed frequency range-index w/ freq
 
         if axis_type == "date":
-            start, end = pd.to_datetime(start), pd.to_datetime(end)
+            start, end = to_datetime(start), to_datetime(end)
             # convert start & end to the same timezone
-            if isinstance(hf_trace_data["x"], pd.DatetimeIndex):
+            if isinstance(hf_trace_data["x"], DatetimeIndex):
                 tz = hf_trace_data["x"].tz
                 try:
                     assert start.tz.__str__() == end.tz.__str__()
@@ -124,9 +175,9 @@ class PlotlyAggregatorParser:
         if (
             isinstance(gap_handler, NoGapHandler)
             # rangeIndex | datetimeIndex with freq -> equally spaced x; so no gaps
-            or isinstance(hf_trace_data["x"], pd.RangeIndex)
+            or isinstance(hf_trace_data["x"], RangeIndex)
             or (
-                isinstance(hf_trace_data["x"], pd.DatetimeIndex)
+                isinstance(hf_trace_data["x"], DatetimeIndex)
                 and hf_trace_data["x"].freq is not None
             )
         ):
@@ -188,7 +239,7 @@ class PlotlyAggregatorParser:
 
         if isinstance(downsampler, DataPointSelector):
             s_v = hf_y_parsed
-            if isinstance(s_v, pd.Categorical):  # pd.Categorical (has no .values)
+            if isinstance(s_v, Categorical):  # Categorical (has no .values)
                 s_v = s_v.codes
             indices = downsampler.arg_downsample(
                 hf_x_parsed,
@@ -196,8 +247,8 @@ class PlotlyAggregatorParser:
                 n_out=hf_trace_data["max_n_samples"],
                 **hf_trace_data.get("downsampler_kwargs", {}),
             )
-            if isinstance(hf_trace_data["x"], pd.RangeIndex):
-                # we avoid slicing the default pd.RangeIndex (as this is not an
+            if isinstance(hf_trace_data["x"], RangeIndex):
+                # we avoid slicing the default RangeIndex (as this is not an
                 # in-memory array) - this proves to be faster than slicing the index.
                 agg_x = (
                     start_idx
@@ -214,8 +265,8 @@ class PlotlyAggregatorParser:
                 n_out=hf_trace_data["max_n_samples"],
                 **hf_trace_data.get("downsampler_kwargs", {}),
             )
-            if isinstance(hf_trace_data["x"], pd.RangeIndex):
-                # we avoid slicing the default pd.RangeIndex (as this is not an
+            if isinstance(hf_trace_data["x"], RangeIndex):
+                # we avoid slicing the default RangeIndex (as this is not an
                 # in-memory array) - this proves to be faster than slicing the index.
                 agg_x = (
                     start_idx

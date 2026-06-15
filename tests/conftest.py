@@ -4,7 +4,6 @@ import os
 from typing import Union
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 import pytest
 from plotly.subplots import make_subplots
@@ -15,6 +14,13 @@ from plotly_resampler import (
     FigureResampler,
     unregister_plotly_resampler,
 )
+from plotly_resampler.compat import _check_pandas
+
+# 可选导入 pandas
+if _check_pandas():
+    import pandas as pd
+else:
+    pd = None
 
 # hyperparameters
 _nb_samples = 10_000
@@ -82,14 +88,18 @@ def driver():
 
 
 @pytest.fixture
-def float_series() -> pd.Series:
+def float_series():
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     x = np.arange(_nb_samples).astype(np.uint32)
     y = np.sin(x / 50).astype(np.float32) + np.random.randn(_nb_samples) / 5
     return pd.Series(index=x, data=y, name="float_series")
 
 
 @pytest.fixture
-def cat_series() -> pd.Series:
+def cat_series():
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     cats_list = ["a", "a", "a", "a"] * 2000
     for i in np.random.randint(0, len(cats_list), 3):
         cats_list[i] = "b"
@@ -103,7 +113,9 @@ def cat_series() -> pd.Series:
 
 
 @pytest.fixture
-def bool_series() -> pd.Series:
+def bool_series():
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     bool_list = [True, False, True, True, True, True] + [True] * 1000
     return pd.Series(
         bool_list * (_nb_samples // len(bool_list) + 1),
@@ -114,6 +126,8 @@ def bool_series() -> pd.Series:
 
 @pytest.fixture
 def example_figure() -> FigureResampler:
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     df_gusb = pd.read_parquet(f"{data_dir}df_gusb.parquet")
     df_data_pc = pd.read_parquet(f"{data_dir}df_pc_test.parquet")
 
@@ -175,7 +189,7 @@ def example_figure() -> FigureResampler:
     for i, c in enumerate(df_data_pc.columns):
         fig.add_trace(
             go.Scattergl(
-                name=f"room {i+1}",
+                name=f"room {i + 1}",
             ),
             hf_x=df_data_pc.index,
             hf_y=df_data_pc[c].astype(np.float32),
@@ -196,6 +210,8 @@ def example_figure() -> FigureResampler:
 
 @pytest.fixture
 def example_figure_fig() -> go.Figure:
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     df_gusb = pd.read_parquet(f"{data_dir}df_gusb.parquet")
     df_data_pc = pd.read_parquet(f"{data_dir}df_pc_test.parquet")
 
@@ -248,7 +264,7 @@ def example_figure_fig() -> go.Figure:
     for i, c in enumerate(df_data_pc.columns):
         fig.add_trace(
             go.Scattergl(
-                name=f"room {i+1}",
+                name=f"room {i + 1}",
                 x=df_data_pc.index,
                 y=df_data_pc[c].astype(np.float32),
             ),
@@ -268,6 +284,9 @@ def example_figure_fig() -> go.Figure:
 
 @pytest.fixture
 def gsr_figure() -> FigureResampler:
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
+
     def groupby_consecutive(
         df: Union[pd.Series, pd.DataFrame], col_name: str = None
     ) -> pd.DataFrame:
@@ -398,6 +417,8 @@ def gsr_figure() -> FigureResampler:
 
 @pytest.fixture
 def multiple_tz_figure() -> FigureResampler:
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     n = 5_050
 
     dr = pd.date_range("2022-02-14", freq="s", periods=n, tz="UTC")
@@ -433,6 +454,8 @@ def multiple_tz_figure() -> FigureResampler:
 
 @pytest.fixture
 def cat_series_box_hist_figure() -> FigureResampler:
+    if not _check_pandas():
+        pytest.skip("pandas not installed")
     # Create a categorical series, with mostly a's, but a few sparse b's and c's
     cats_list = np.array(list("aaaaaaaaaa" * 1000))
     cats_list[np.random.choice(len(cats_list), 100, replace=False)] = "b"
