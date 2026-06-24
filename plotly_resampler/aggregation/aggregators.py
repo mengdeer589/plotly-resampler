@@ -263,6 +263,15 @@ class MinMaxLTTB(DataPointSelector):
             **self.downsample_kwargs,
         )
 
+    def batch_downsample(
+        self,
+        xy_pairs: list,
+        n_out: int,
+        **kwargs,
+    ):
+        """Batch downsample multiple traces via tsdownsample's Rust rayon."""
+        return self.minmaxlttb.batch_downsample(xy_pairs, n_out=n_out, **kwargs)
+
 
 class EveryNthPoint(DataPointSelector):
     """Naive (but fast) aggregator method which returns every N'th point.

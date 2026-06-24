@@ -8,6 +8,7 @@ from __future__ import annotations
 
 __author__ = "Jonas Van Der Donckt, Jeroen Van Der Donckt, Emiel Deprost"
 
+import concurrent.futures
 import itertools
 import re
 from abc import ABC
@@ -397,37 +398,49 @@ class AbstractFigureAggregator(BaseFigure, ABC):
             hf_trace_data, start_idx, end_idx
         )
 
-        # -------------------- Set the hf_trace_data_props -------------------
+        self._apply_trace_results(trace, hf_trace_data, start_idx, end_idx, agg_x, agg_y, indices)
+        return trace
+
+    # (the batch path in _check_update_figure_dict passes handle_gaps=True)
+    def _apply_trace_results(
+        self,
+        trace: dict,
+        hf_td: dict,
+        start_idx: int,
+        end_idx: int,
+        agg_x: np.ndarray,
+        agg_y: np.ndarray,
+        indices: np.ndarray,
+        handle_gaps: bool = False,
+    ) -> None:
+        """Apply aggregated results to a trace: gap handling, trace name, properties."""
+        if handle_gaps:
+            agg_x, agg_y, indices = PlotlyAggregatorParser._handle_gaps(
+                hf_td, hf_x=hf_td["x"][start_idx:end_idx],
+                agg_x=agg_x, agg_y=agg_y, indices=indices,
+            )
         trace["x"] = agg_x
         trace["y"] = agg_y
         trace["name"] = self._parse_trace_name(
-            hf_trace_data, end_idx - start_idx, agg_x
+            hf_td, end_idx - start_idx, agg_x
         )
-
         def _nest_dict_rec(k: str, v: any, out: dict) -> None:
-            """Recursively nest a dict based on the key whose '_' indicates level."""
             k, *rest = k.split("_", 1)
             if rest:
                 _nest_dict_rec(rest[0], v, out.setdefault(k, {}))
             else:
                 out[k] = v
-
-        # Check if downsamplable properties also need to be downsampled
         for prop_name, _, _ in DOWNSAMPLABLE_PROPERTIES:
-            k_val = hf_trace_data.get(prop_name)
+            k_val = hf_td.get(prop_name)
             if isinstance(k_val, np.ndarray) or (
                 _check_pandas() and isinstance(k_val, get_pandas().Series)
             ):
-                assert isinstance(hf_trace_data["downsampler"], DataPointSelector), (
+                assert isinstance(hf_td["downsampler"], DataPointSelector), (
                     "Only DataPointSelector can downsample non-data trace array props."
                 )
-                # Use the same indices that were used for x and y aggregation
-                # indices are relative to the slice, so we need to add start_idx
                 _nest_dict_rec(prop_name, k_val[start_idx + indices], trace)
             elif k_val is not None:
                 trace[prop_name] = k_val
-
-        return trace
 
     def _layout_xaxis_to_trace_xaxis_mapping(self) -> Dict[str, List[str]]:
         """Construct a dict which maps the layout xaxis keys to the trace xaxis keys.
@@ -453,6 +466,16 @@ class AbstractFigureAggregator(BaseFigure, ABC):
                 # append the trace xaxis to the layout xaxis key its value list
                 mapping_dict.setdefault(layout_xaxes, []).append(trace_xaxes)
         return mapping_dict
+
+    def _get_thread_pool(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Get or create a thread pool for parallel trace processing."""
+        if not hasattr(self, "_thread_pool") or self._thread_pool is None:
+            import os
+            n_workers = min(32, os.cpu_count() or 4)
+            self._thread_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=n_workers
+            )
+        return self._thread_pool
 
     def _check_update_figure_dict(
         self,
@@ -503,20 +526,42 @@ class AbstractFigureAggregator(BaseFigure, ABC):
             # Retrieve the trace xaxis values that are affected by the relayout event
             trace_xaxis_filter: List[str] = layout_trace_mapping[layout_xaxis_filter]
 
+        # Identify which traces need updating
+        pending_idxs: List[int] = []
         for idx, trace in enumerate(figure["data"]):
-            # We skip when (i) the trace-idx already has been updated or (ii) when
-            # there is a layout_xaxis_filter and the trace xaxis is not in the filter
             if idx in updated_trace_indices or (
                 layout_xaxis_filter is not None
                 and trace.get("xaxis", "x") not in trace_xaxis_filter
             ):
                 continue
+            if self._query_hf_data(trace) is not None:
+                pending_idxs.append(idx)
 
-            # If we managed to find and update the trace, it will return the trace
-            # and thus not None.
-            updated_trace = self._check_update_trace_data(trace, start=start, end=stop)
-            if updated_trace is not None:
+        if not pending_idxs:
+            return updated_trace_indices
+
+        if len(pending_idxs) == 1:
+            # Single trace: avoid threading overhead, run directly
+            idx = pending_idxs[0]
+            trace = figure["data"][idx]
+            updated = self._check_update_trace_data(trace, start=start, end=stop)
+            if updated is not None:
                 updated_trace_indices.append(idx)
+            return updated_trace_indices
+
+        # Parallel via ThreadPool: each trace released GIL during Rust downsample
+        pool = self._get_thread_pool()
+        futs: dict = {}
+        for idx in pending_idxs:
+            trace = figure["data"][idx]
+            fut = pool.submit(self._check_update_trace_data, trace, start, stop)
+            futs[fut] = idx
+
+        for fut in concurrent.futures.as_completed(futs):
+            idx = futs[fut]
+            if fut.result() is not None:
+                updated_trace_indices.append(idx)
+
         return updated_trace_indices
 
     @staticmethod

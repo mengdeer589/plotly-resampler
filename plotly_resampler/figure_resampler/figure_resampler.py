@@ -710,7 +710,7 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
                 patched_figure["data"][trace_index][k] = v
         return patched_figure
 
-    async def _async_construct_update_data_patch(
+    async def async_construct_update_data_patch(
         self, relayout_data: dict
     ) -> Union[dash.Patch, dash.no_update]:
         """Async wrapper around [`construct_update_data_patch`][figure_resampler.figure_resampler.FigureResampler.construct_update_data_patch].
@@ -782,7 +782,7 @@ class FigureResampler(AbstractFigureAggregator, go.Figure):
                 dash.Output(graph_id, "figure", allow_duplicate=True),
                 dash.Input(graph_id, "relayoutData"),
                 prevent_initial_call=True,
-            )(self._async_construct_update_data_patch)
+            )(self.async_construct_update_data_patch)
         else:
             app.callback(
                 dash.Output(graph_id, "figure", allow_duplicate=True),

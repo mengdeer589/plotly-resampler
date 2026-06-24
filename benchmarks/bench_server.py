@@ -18,18 +18,23 @@ from bench_common import generate_events
 
 FLASK_PORT = 9001
 FASTAPI_PORT = 9002
+GRANIAN_PORT = 9003
 CONCURRENCY_LEVELS = [1, 5, 10, 20]
 N_REQUESTS_PER_LEVEL = 50
 
 SCRIPT_DIR = os.path.dirname(__file__)
 
 
-def start_server(script_name: str, port: int):
+def start_server(script_name: str, port: int, extra_env: dict | None = None):
     script_path = os.path.join(SCRIPT_DIR, script_name)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     return subprocess.Popen(
         [sys.executable, script_path, str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
 
 
@@ -132,6 +137,8 @@ async def main():
 
     proc_flask = start_server("server_flask.py", FLASK_PORT)
     proc_fastapi = start_server("server_fastapi.py", FASTAPI_PORT)
+    proc_granian = start_server("server_granian.py", GRANIAN_PORT,
+                               extra_env={"PYTHONPATH": os.path.abspath(SCRIPT_DIR)})
 
     try:
         if not wait_for_server(FLASK_PORT):
@@ -143,31 +150,44 @@ async def main():
             return
         print(f"  FastAPI server   -> http://127.0.0.1:{FASTAPI_PORT}/aggregate")
         print(f"  FastAPI WS       -> ws://127.0.0.1:{FASTAPI_PORT}/ws/aggregate")
+        if not wait_for_server(GRANIAN_PORT):
+            print("  ERROR: Granian ASGI server did not start")
+            return
+        print(f"  Granian ASGI     -> http://127.0.0.1:{GRANIAN_PORT}/aggregate")
+        print(f"  Granian WS       -> ws://127.0.0.1:{GRANIAN_PORT}/ws/aggregate")
 
         http_flask = f"http://127.0.0.1:{FLASK_PORT}/aggregate"
         http_fastapi = f"http://127.0.0.1:{FASTAPI_PORT}/aggregate"
+        http_granian = f"http://127.0.0.1:{GRANIAN_PORT}/aggregate"
         ws_fastapi = f"ws://127.0.0.1:{FASTAPI_PORT}/ws/aggregate"
+        ws_granian = f"ws://127.0.0.1:{GRANIAN_PORT}/ws/aggregate"
 
         for concurrency in CONCURRENCY_LEVELS:
             print(f"\n  --- Concurrency = {concurrency} ---")
             async with aiohttp.ClientSession() as session:
                 flask_lat = await bench_http(session, http_flask, events, concurrency)
                 fastapi_lat = await bench_http(session, http_fastapi, events, concurrency)
+                granian_lat = await bench_http(session, http_granian, events, concurrency)
             # WebSocket: each concurrent "user" opens their own connection
-            ws_lat = await bench_ws(ws_fastapi, events, concurrency)
+            ws_fastapi_lat = await bench_ws(ws_fastapi, events, concurrency)
+            ws_granian_lat = await bench_ws(ws_granian, events, concurrency)
             compare_section(
                 f"Concurrency = {concurrency}",
                 ("Flask HTTP (sync)", flask_lat),
                 ("FastAPI HTTP (async)", fastapi_lat),
-                ("FastAPI WS (async+ws)", ws_lat),
+                ("Granian ASGI (async)", granian_lat),
+                ("FastAPI WS (async+ws)", ws_fastapi_lat),
+                ("Granian WS (async+ws)", ws_granian_lat),
             )
 
     finally:
         print("\n  Shutting down servers...")
         proc_flask.terminate()
         proc_fastapi.terminate()
+        proc_granian.terminate()
         proc_flask.wait(timeout=3)
         proc_fastapi.wait(timeout=3)
+        proc_granian.wait(timeout=3)
         print("  Done.")
 
 
